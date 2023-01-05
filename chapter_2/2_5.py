@@ -13,6 +13,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
+
 class BanditInstance:
     """
     Class for Single Instance of k-armed bandit problem.
@@ -21,8 +22,11 @@ class BanditInstance:
     num_bandits: number of possible actions to take
     """
 
-    def __init__(self, num_bandits):
+    def __init__(self, num_bandits, seed=None):
+        if seed:
+            np.random.seed(seed)
         self.q_stars = [np.random.normal(loc=0, scale=1, size=num_bandits)]  # true reward values
+        self.optimal_action = np.argmax(self.q_stars[-1])
         self.iteration = 0
         self.shift_iters = []
 
@@ -52,12 +56,12 @@ class BanditInstance:
 
 
 class BanditLearner:
-    def __init__(self, num_bandits, initial_guesses=None, epsilon=None):
+    def __init__(self, num_bandits, bandit_instance, initial_guesses=None, epsilon=None):
         self.k = num_bandits
-        self.bandit_instance = BanditInstance(num_bandits)
         self.alphas = []
         self.rewards = []
         self.actions = []
+        self.bandit_instance = bandit_instance
 
         if initial_guesses:
             try:
@@ -66,14 +70,13 @@ class BanditLearner:
                         "The provided guesses (length = {0}) does not match the provided number of bandits (length={1})".format(
                             len(initial_guesses), num_bandits))
                 else:
-                    self.qs = [initial_guesses]
+                    self.qs = [[guess] for guess in initial_guesses]
             except TypeError as te:
                 raise TypeError("The provided initial guesses do not appear to have a length attribute.")
         else:
-            self.qs = [[0 for j in range(num_bandits)]]
+            self.qs = [[0] for _ in range(num_bandits)]
 
-        if epsilon:
-            self.epsilon = epsilon
+        self.epsilon = epsilon
 
     def choose_action(self):
         if self.epsilon:
@@ -81,10 +84,10 @@ class BanditLearner:
             if use_random_choice:
                 return np.random.choice(np.arange(self.k))
             else:
-                return np.argmax(self.qs[-1])
+                return np.argmax([q_a[-1] for q_a in self.qs])
         else:
             # choose optimal action
-            return np.argmax(self.qs[-1])
+            return np.argmax([q_a[-1] for q_a in self.qs])
 
     def step(self, alpha):
         action = self.choose_action()
@@ -92,22 +95,32 @@ class BanditLearner:
         self.rewards.append(reward)
         self.actions.append(action)
 
-        qn = self.qs[-1].copy()
-        qn[action] = qn[action] + alpha * (reward - qn[action])
-        self.qs.append(qn)
+        if alpha.lower() == 'average':
+            alpha = 1 / len(self.qs[action])
+        else:
+            raise NotImplementedError("alpha = {0} mode not implemented".format(alpha))
+
+        self.qs[action].append(self.qs[action][-1] + alpha * (reward - self.qs[action][-1]))
         self.alphas.append(alpha)
 
         self.bandit_instance.step()
 
-num_runs = 2000
-run_length = 10000
-rewards = np.zeros((num_runs, run_length))
-for i in tqdm(range(num_runs), desc='Performing Runs', total=num_runs):
-    bl = BanditLearner(10, epsilon=.01)
-    for j in range(1, run_length + 1):
-        alph = 1/j
-        bl.step(alph)
-    rewards[i,:] = bl.rewards
 
-plt.plot(rewards.mean(axis=0))
+num_runs = 2000
+run_length = 1000
+for eps in [None, .01, .1]:
+    rewards = np.zeros((num_runs, run_length))
+    opt_actions = np.zeros((num_runs, run_length))
+    for i in tqdm(range(num_runs), desc='Performing Runs', total=num_runs):
+        bi = BanditInstance(10)
+        bl = BanditLearner(10, bandit_instance=bi, epsilon=eps)
+        for j in range(1, run_length + 1):
+            bl.step('average')
+
+        rewards[i, :] = bl.rewards
+        opt_action = bi.optimal_action
+        opt_actions[i, :] = bl.actions == opt_action
+
+    plt.plot(opt_actions.mean(axis=0), label=r'$\epsilon$={0}'.format(eps))
+plt.legend()
 plt.show()
