@@ -38,12 +38,14 @@ class BanditInstance:
         """
         return np.random.normal(loc=self.q_stars[-1][action], scale=1)
 
-    def shift_true_values(self, new_values):
+    def shift_true_values(self, new_values=None):
         """
         Update the underlying true bandit values, making the distributions nonstationary
         :param new_values:
         :return: None
         """
+        if not new_values:
+            new_values = self.q_stars[-1] + np.random.normal(loc=0, scale=.01, size=len(self.q_stars[-1]))
         self.q_stars.append(new_values)
         self.shift_iters.append(self.iteration)
 
@@ -89,38 +91,60 @@ class BanditLearner:
             # choose optimal action
             return np.argmax([q_a[-1] for q_a in self.qs])
 
-    def step(self, alpha):
+    def step(self, alph):
         action = self.choose_action()
         reward = self.bandit_instance.reward(action)
+        try:
+            if alph.lower() == 'average':
+                alph = 1 / len(self.qs[action])
+            else:
+                raise NotImplementedError("alpha = {0} mode not implemented".format(alph))
+        except AttributeError:
+            pass  # ignore attribute error if numerical alpha provided
+
+        self.qs[action].append(self.qs[action][-1] + alph * (reward - self.qs[action][-1]))
+        self.alphas.append(alph)
         self.rewards.append(reward)
         self.actions.append(action)
-
-        if alpha.lower() == 'average':
-            alpha = 1 / len(self.qs[action])
-        else:
-            raise NotImplementedError("alpha = {0} mode not implemented".format(alpha))
-
-        self.qs[action].append(self.qs[action][-1] + alpha * (reward - self.qs[action][-1]))
-        self.alphas.append(alpha)
-
         self.bandit_instance.step()
 
 
 num_runs = 2000
-run_length = 1000
-for eps in [None, .01, .1]:
+run_length = 10000
+alpha = .1
+epsilon = .1
+for mode in ['Sample Averages', 'Constant Step-Size']:
     rewards = np.zeros((num_runs, run_length))
     opt_actions = np.zeros((num_runs, run_length))
     for i in tqdm(range(num_runs), desc='Performing Runs', total=num_runs):
         bi = BanditInstance(10)
-        bl = BanditLearner(10, bandit_instance=bi, epsilon=eps)
-        for j in range(1, run_length + 1):
-            bl.step('average')
+        bl = BanditLearner(10, bandit_instance=bi, epsilon=epsilon)
+        for j in range(run_length):
+            if mode == "Sample Averages":
+                bl.step('average')
+            elif mode == "Constant Step-Size":
+                bl.step(alpha)
+
+            bl.bandit_instance.shift_true_values()
+            opt_action = bi.optimal_action
+            opt_actions[i, j] = np.asarray(bl.actions[-1]) == opt_action
 
         rewards[i, :] = bl.rewards
-        opt_action = bi.optimal_action
-        opt_actions[i, :] = bl.actions == opt_action
 
-    plt.plot(opt_actions.mean(axis=0), label=r'$\epsilon$={0}'.format(eps))
+
+    plt.figure('poa')
+    plt.plot(opt_actions.mean(axis=0), label=mode)
+
+    plt.figure('r')
+    plt.plot(rewards.mean(axis=0), label=mode)
+
+plt.figure('poa')
 plt.legend()
+plt.xlabel("Step")
+plt.ylabel("% Optimal Action")
+
+plt.figure('r')
+plt.legend()
+plt.xlabel("Step")
+plt.ylabel("Average Reward")
 plt.show()
