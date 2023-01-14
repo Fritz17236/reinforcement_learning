@@ -110,7 +110,7 @@ class BanditLearner:
 
 
 num_runs = 2000
-run_length = 10000
+run_length = 1000
 alpha = .1
 epsilon = .1
 for mode in ['Sample Averages', 'Constant Step-Size']:
