@@ -31,6 +31,8 @@ REWARD_PER_RENTAL = 10
 DISCOUNT = 0.9
 POLICY_EVAL_THRESH = 1
 
+USE_NONLINEARITIES = True # use nonlinear conditions (free move + parking cost)
+
 
 def poisson(arr, rate):
     """
@@ -144,7 +146,22 @@ def expected_return(state, action, values):
 
     next_states_1, next_states_2, joint_prob = next_possible_states(state, car_dynamics, rr_dynamics)
 
-    rewards = REWARD_PER_RENTAL * (rr_dynamics[0] + rr_dynamics[1]) - (2 * int(action[0]))
+    if USE_NONLINEARITIES:
+        # 1 free car move
+        moving_cost = 2 * (max([int(action[0]) - 1, 0]))
+        # every car stored over 10 costs $4 / night
+        num_cars_excess = (
+                              np.maximum(next_states_1 - 10, np.zeros_like(next_states_1))
+            +
+                              np.maximum(next_states_2 - 10, np.zeros_like(next_states_2))
+        )
+        storage_cost = 4 * num_cars_excess
+    else:
+        moving_cost = 2 * int(action[0])
+        storage_cost = 0
+
+
+    rewards = REWARD_PER_RENTAL * (rr_dynamics[0] + rr_dynamics[1]) - moving_cost - storage_cost
 
     next_vals = state_arrays_to_values(next_states_1, next_states_2, values)
 
@@ -224,7 +241,7 @@ def plot_policy(policy):
     xx, yy = np.meshgrid(x, y)
     vals = state_arrays_to_values(xx, yy, policy)
     vals = np.reshape(
-        [-int(a[0]) if a[1] == '1' else int(a[0]) for a in vals.flatten()],
+        [int(a[0]) if a[1] == '1' else -int(a[0]) for a in vals.flatten()],
         xx.shape
     )
     plt.imshow(vals.T)
