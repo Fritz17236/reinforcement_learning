@@ -11,15 +11,18 @@ occur in real problems and cannot easily be handled by optimization methods othe
 dynamic programming. To check your program, first replicate the results given for the
 original problem.
 """
-import math
+import functools
+from functools import cache
+from itertools import repeat
 
 import numpy as np
-import os
-import pickle
-from numba import jit
+from multiprocessing import Pool
+from scipy.stats import poisson
+import matplotlib.pyplot as plt
+from tqdm import tqdm
+import scipy
 
 # Parameters
-from tqdm import tqdm
 
 RATE_RENTAL_1 = 3
 RATE_RENTAL_2 = 4
@@ -31,133 +34,76 @@ MAX_CARS_MOVE = 5
 REWARD_PER_RENTAL = 10
 
 DISCOUNT = 0.9
-POLICY_EVAL_THRESH = 1e-6
+POLICY_EVAL_THRESH = 6.5
+
+compute = True
 
 
-psrsa_cache_file = 'psrsa_cache.pkl'
-compute = False
+def poisson(arr, rate):
+    return np.float_power(np.broadcast_to(rate, arr.shape), arr) * np.exp(-rate) / scipy.special.factorial(arr)
 
 
-@jit(nopython=True, cache=True)
-def charToInt(char):
-    """
-    Very dumb implementation for possible numbers of cars moved because numba doesn't support casting str to int.
-    """
-    if char == '0':
-        return 0
-    elif char == '1':
-        return 1
-    elif char == '2':
-        return 2
-    elif char == '3':
-        return 3
-    elif char == '4':
-        return 4
-    elif char == '5':
-        return 5
+def state_arrays_to_values(states_1, states_2, values):
+    states_1_flat = states_1.flatten()
+    states_2_flat = states_2.flatten()
+    values_flat = np.asarray([values[state] for state in zip(states_1_flat, states_2_flat)])
+    return values_flat.reshape(states_1.shape)
 
 
-@jit(nopython=True, cache=True)
-def factorial(x):
-    if x == 1: # base case
-        return 1
-    else: # recurse
-        return x * factorial(x - 1)
+def expected_return(state, action, values):
+    cars_moved_1 = -int(action[0]) if action[1] == '1' and action[2] == '2' else int(action[0])
+    cars_moved_2 = int(action[0]) if action[1] == '1' and action[2] == '2' else -int(action[0])
+
+    possible_rentals_1 = np.arange(min(state[0] - cars_moved_2, MAX_NUM_CARS) + 1)
+    possible_returns_1 = np.arange(MAX_NUM_CARS + 1)
+
+    possible_rentals_2 = np.arange(min(state[1] - cars_moved_1, MAX_NUM_CARS) + 1)
+    possible_returns_2 = np.arange(MAX_NUM_CARS + 1)
+
+    rentals_1, returns_1, rentals_2, returns_2 = np.meshgrid(
+        possible_rentals_1, possible_returns_1,
+        possible_rentals_2, possible_returns_2
+    )
+
+    prob_rentals_1 = poisson(rentals_1, RATE_RENTAL_1)
+    prob_returns_1 = poisson(returns_1, RATE_RETURN_1)
+    prob_rentals_2 = poisson(rentals_2, RATE_RENTAL_2)
+    prob_returns_2 = poisson(returns_2, RATE_RETURN_2)
+
+    next_states_rentals_returns_1 = state[0] - rentals_1 + returns_1 + cars_moved_1
+    next_states_rentals_returns_2 = state[1] - rentals_2 + returns_2 + cars_moved_2
+
+    next_states_rentals_returns_1[next_states_rentals_returns_1 > MAX_NUM_CARS] = MAX_NUM_CARS
+    next_states_rentals_returns_2[next_states_rentals_returns_2 > MAX_NUM_CARS] = MAX_NUM_CARS
+
+    rewards = REWARD_PER_RENTAL * (rentals_1 + rentals_2) - (2 * int(action[0]))
+
+    next_vals = state_arrays_to_values(next_states_rentals_returns_1, next_states_rentals_returns_2, values)
+
+    val_updates = (prob_rentals_1 * prob_returns_1 * prob_rentals_2 * prob_returns_2) * \
+                  (rewards + DISCOUNT * next_vals)
+
+    out = np.sum(val_updates)
+
+    return out
 
 
-@jit(nopython=True, cache=True)
-def poisson(rate, n):
-    """
-    Poisson Probability Distribution
-    :param rate: Arrival Rate of Poisson Process (aka Lambda)
-    :param n: Number of Arrivals (in this case requests or returns)
-    :return: probability of n arrivals at given rate, float in  [0, 1]
-    """
-    return np.float_power(rate, n) * np.exp(-rate) / factorial(n)
-
-
-@jit(nopython=True, cache=True)
-def cars_moved_in(action, loc):
-    """
-    Return the number of cars moved into a location by a given action. If a location loses cars, this returns negative.
-    :param action: action string described below;
-    :param loc: string/char of 1 or 2, indicating location 1 or two respectively.
-    :return: Number of cars entering loc. If cars are leaving, this number is negative
-    """
-    if action == '0xx':
-        return 0
-
-    num_cars_moved = charToInt(action[0])
-    if (action[1] == '1') and (action[2] == '2'):  # cars moving from location 1 to location 2
-        return -num_cars_moved if (loc == '1') else num_cars_moved
-
-    elif (action[1] == '2') and (action[2] == '1'):  # cars moving from location 2 to location 1
-        return num_cars_moved if (loc == '1') else -num_cars_moved
-
-
-@jit(nopython=True, cache=True)
-def psrsa(next_state, reward, curr_state, action):
-    """
-    MDP Dynamics Probability for the Car Rental Problem
-    :param next_state: tuple, The next state (num cars at locations 1 and 2) reached after taking the given action
-    :param reward: The scalar reward earned by reaching next state
-    :param curr_state: tuple, the current state (num cars at locations 1 and 2)
-    :param action: action string described below; the action currently taken to reach next state
-    :return: float, the probability of reaching next_state and gaining reward given current state and action taken
-    """
-    num_cars_moved = charToInt(action[0])
-
-    # compute total number of rentals from reward and action: # reward = $10 * total_rentals - 2 * num_cars_moved
-    total_rentals = (reward + (2 * num_cars_moved)) // 10
-
-    total_prob = 0
-
-    for rentals_from_1 in range(total_rentals + 1):
-        rentals_from_2 = total_rentals - rentals_from_1
-
-        returns_to_1 = next_state[0] - curr_state[0] + rentals_from_1 - cars_moved_in(action, loc=1)
-        returns_to_2 = next_state[1] - curr_state[1] + rentals_from_2 - cars_moved_in(action, loc=2)
-        if (returns_to_1 < 0) or (returns_to_2 < 0):
-            continue
-
-        total_prob += (
-                poisson(RATE_RETURN_1, returns_to_1) * poisson(RATE_RENTAL_1, rentals_from_1)
-                *
-                poisson(RATE_RETURN_2, returns_to_2) * poisson(RATE_RENTAL_2, rentals_from_2)
-        )
-    return total_prob
-
-
-@jit(nopython=True, cache=True)
-def possible_future_states(state, states, action, reward):
-    # compute possible future states given a current state, action, and reward.
-    # the total number of cars can decrease by at most [total_rentals = (reward + (2 * num_cars_moved)) // 10]
-    total_num_cars = state[0] + state[1]
-    num_cars_moved = charToInt(action[0])
-    total_rentals = (reward + (2 * num_cars_moved)) // 10
-
-    return [s for s in states if (s[0] + s[1]) >= total_num_cars - total_rentals]
-
-if compute:
-    # region  Initialization
-
+def initialize():
     # state space is that either location can have anywhere from [0,... 20] cars.
     states = [(cars_loc_1, cars_loc_2)
               for cars_loc_1 in range(MAX_NUM_CARS + 1)
               for cars_loc_2 in range(MAX_NUM_CARS + 1)]
 
-    values = np.random.random(size=len(states)) - 0.5
-
     '''
-    Possible actions are denoted by a 3-digit string, where the leftmost digit
-    represents the number of cars moved, the middle digit represents the source
-    location and the third digit represents the destination location. E.g.
-    121 = move one car from location 2  to location 1
-    212 = move 2 cars from location 1 to location 2
-    0xx = move no cars (do nothing)
-    
-    There is only 1 action for doing nothing giving 10 total actions. 
-    '''
+        Possible actions are denoted by a 3-digit string, where the leftmost digit
+        represents the number of cars moved, the middle digit represents the source
+        location and the third digit represents the destination location. E.g.
+        121 = move one car from location 2  to location 1
+        212 = move 2 cars from location 1 to location 2
+        0xx = move no cars (do nothing)
+        
+        There is only 1 action for doing nothing giving 10 total actions. 
+        '''
     possible_actions = (
             [str(i) + '21' for i in range(1, MAX_CARS_MOVE + 1)]
             +
@@ -190,102 +136,133 @@ if compute:
                 ]
         for state in states
     }
-
     policy = {state: actions[state][0] for state in states}  # arbitrary choice of action as initial policy
     policies = [policy]
-    values = {state: np.random.random() for state in states}
+    values = {state: np.random.random() + 300 for state in states}
     values['terminal'] = 0
-    # endregion
 
-    # while not policy stable
+    return states, values, actions, policy, policies
+
+
+def plot_values(values):
+    x = np.arange(MAX_NUM_CARS + 1)
+    y = np.arange(MAX_NUM_CARS + 1)
+    xx, yy = np.meshgrid(x, y)
+    vals = state_arrays_to_values(xx, yy, values)
+    ax = plt.axes(projection='3d')
+    ax.plot_surface(xx, yy, vals)
+
+
+def plot_policy(policy):
+    x = np.arange(MAX_NUM_CARS + 1)
+    y = np.arange(MAX_NUM_CARS + 1)
+    xx, yy = np.meshgrid(x, y)
+    vals = state_arrays_to_values(xx, yy, policy)
+    vals = np.reshape(
+        [int(a[0]) if a[1] == '1' else -int(a[0]) for a in vals.flatten()],
+        xx.shape
+    )
+    plt.imshow(vals)
+    plt.gca().invert_yaxis()
+    plt.xlabel("Cars at Location 2")
+    plt.ylabel("Cars at Location 1")
+    plt.title("Policy: Cars Moved Into Location 1")
+    plt.colorbar()
+
+
+# if True:
+states, values, actions, policy, policies = initialize()
+
+
+def evaluate(state, values, policy):
+    v_curr = values[state]
+    action = policy[state]
+    er = expected_return(state, action, values)
+    return er, np.max([0, np.abs(v_curr - er)]), state
+
+
+def improve(state, actions):
+    action_values = [expected_return(state, action, values) for action in actions[state]]
+    policy_update = actions[state][np.argmax(action_values)]
+
+    return policy_update, state
+
+
+if __name__ == '__main__':
+
     policy_stable = False
+    values_sets = [values]
+
     while not policy_stable:
 
-        # region Evaluate Policy
-        # use caching for quick lookup of dynamics function;
-        if os.path.exists(psrsa_cache_file):
-            with open(psrsa_cache_file, 'rb') as f:
-                psrsa_cache = pickle.load(f)
-        else:
-            psrsa_cache = {}
-
+        print('Not Policy Stable, Evaluating Policy...')
+        eval_loop_count = 0
         while True:
-            delta = 0
-            for state in tqdm(states, total=len(states), desc='Evaluating States'):
-                v_curr = values[state]
-                running_sum = 0
-                action = policy[state]
-                update_cache = False
-                num_cars = state[0] + state[1]
-                possible_rewards = [10 * num_rentals - 2 * int(action[0]) for num_rentals in range(num_cars + 1)]
-                for r in possible_rewards:
-                    for next_state in possible_future_states(state, states, action,
-                                                             r):  # all states are possible future states
-                        if (next_state, r, state, action) in psrsa_cache:
-                            running_sum += psrsa_cache[(next_state, r, state, action)]
-                        else:
-                            prob = psrsa(next_state, r, state, action) * (r + DISCOUNT * values[next_state])
-                            running_sum += prob
-                            psrsa_cache[(next_state, r, state, action)] = prob
-                            update_cache = True
+            with Pool(processes=8) as p:
+                expected_returns, deltas, eval_states = \
+                    zip(*p.map(functools.partial(evaluate, values=values, policy=policy), states))
 
-                values[state] = running_sum
-                delta = np.max([delta, np.abs(v_curr - values[state])])
+            for idx, s in enumerate(eval_states):
+                values[s] = expected_returns[idx]
 
-            if update_cache:
-                with open(psrsa_cache_file, 'wb') as f:
-                    pickle.dump(psrsa_cache, f)
+            values_sets.append(values)
 
-            if delta < POLICY_EVAL_THRESH:
+            if np.max(deltas) < POLICY_EVAL_THRESH:
                 break
-        # endregion
+            else:
+                print("delta = ", np.max(deltas))
+                eval_loop_count += 1
 
-        # region Improve Policy
+        print("Improving Policy...")
+        if eval_loop_count == 0:
+            break
+
+        with Pool(processes=8) as p:
+            policy_updates, eval_states = \
+                zip(*p.map(functools.partial(improve, actions=actions), states))
+
         policy_stable = True
-        update_cache = False
-        for state in tqdm(states, total=len(states), desc='Improving Policy'):
-            old_action = policy[state]
-
-            num_cars = state[0] + state[1]
-            action_values = []
-            for action in actions[state]:
-                possible_rewards = [10 * num_rentals - 2 * int(action[0]) for num_rentals in range(num_cars + 1)]
-                running_sum = 0
-                for r in possible_rewards:
-                    for next_state in possible_future_states(state, states, action, r):
-                        if (next_state, r, state, action) in psrsa_cache:
-                            running_sum += psrsa_cache[(next_state, r, state, action)]
-                        else:
-                            prob = psrsa(next_state, r, state, action) * (r + DISCOUNT * values[next_state])
-                            running_sum += prob
-                            psrsa_cache[(next_state, r, state, action)] = prob
-                            update_cache = True
-                action_values.append(running_sum)
-
-            policy[state] = actions[state][np.argmax(action_values)]
-            if old_action != policy[state]:
+        for idx, s in enumerate(states):
+            if policy[s] != policy_updates[idx]:
                 policy_stable = False
+                policy[s] = policy_updates[idx]
 
-        if update_cache:
-            with open(psrsa_cache_file, 'wb') as f:
-                pickle.dump(psrsa_cache, f)
 
-        policies.append(policy)
-        # endregion
 
-    # improvement loop
+        # policy_stable = True
+        # for state in tqdm(states, total=len(states), desc='Improving Policy'):
+        #     old_action = policy[state]
+        #     action_values = [expected_return(state, action, values) for action in actions[state]]
+        #     policy[state] = actions[state][np.argmax(action_values)]
+        #     if old_action != policy[state]:
+        #         policy_stable = False
 
-    with open('policies.pkl', 'wb') as f:
-        pickle.dump(policies, f)
+        print('appended policy, policy_stable = ',policy_stable)
+        policies.append(policy.copy())
 
-    with open('value.pkl', 'wb') as f:
-        pickle.dump(values, f)
+    print("leaving: policy_stable = ", policy_stable)
 
-else:
-    # assuming the following files are saved
-    with open('policies.pkl', 'rb') as f:
-        policies = pickle.load(f)
+    for i, pol in enumerate(policies):
 
-    with open('value.pkl', 'rb') as f:
-        value = pickle.load(f)
+        plt.figure('policy ' + str(i))
+        plot_policy(pol)
 
+        plt.figure('values ' + str(i))
+        plot_values(values_sets[i])
+    plt.show()
+    #     # improvement loop
+    #
+    #     with open('policies.pkl', 'wb') as f:
+    #         pickle.dump(policies, f)
+    #
+    #     with open('value.pkl', 'wb') as f:
+    #         pickle.dump(values, f)
+    #
+    # else:
+    #     # assuming the following files are saved
+    #     with open('policies.pkl', 'rb') as f:
+    #         policies = pickle.load(f)
+    #
+    #     with open('value.pkl', 'rb') as f:
+    #         value = pickle.load(f)
+    #
