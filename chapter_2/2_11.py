@@ -21,7 +21,7 @@ class BanditInstance:
     def __init__(self, num_bandits, seed=None):
         if seed:
             np.random.seed(seed)
-        self.q_stars = [np.random.normal(loc=0, scale=1, size=num_bandits)]  # true reward values
+        self.q_stars = [np.random.normal(loc=0, scale=1, size=num_bandits)]  # true reward tuple_keyed_dict
         self.optimal_action = np.argmax(self.q_stars[-1])
         self.iteration = 0
         self.shift_iters = []
@@ -36,7 +36,7 @@ class BanditInstance:
 
     def shift_true_values(self, new_values=None):
         """
-        Update the underlying true bandit values, making the distributions nonstationary
+        Update the underlying true bandit tuple_keyed_dict, making the distributions nonstationary
         :param new_values:
         :return: None
         """

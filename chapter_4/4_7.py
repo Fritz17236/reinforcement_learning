@@ -12,18 +12,13 @@ dynamic programming. To check your program, first replicate the results given fo
 original problem.
 """
 import functools
-from functools import cache
-from itertools import repeat
-
 import numpy as np
 from multiprocessing import Pool
 from scipy.stats import poisson
 import matplotlib.pyplot as plt
-from tqdm import tqdm
 import scipy
 
 # Parameters
-
 RATE_RENTAL_1 = 3
 RATE_RENTAL_2 = 4
 RATE_RETURN_1 = 3
@@ -31,61 +26,131 @@ RATE_RETURN_2 = 2
 
 MAX_NUM_CARS = 20
 MAX_CARS_MOVE = 5
+
 REWARD_PER_RENTAL = 10
-
 DISCOUNT = 0.9
-POLICY_EVAL_THRESH = 6.5
-
-compute = True
+POLICY_EVAL_THRESH = 1
 
 
 def poisson(arr, rate):
+    """
+    Compute the Poisson PMF of the given array elementwise with given rate. The PMF gives the probability of n-arrivals
+    over a unit of time.
+    Poisson PMF is  rate^n * exp(-rate) / n!
+    :param arr: n-dim numpy array specifying number of arrivals
+    :param rate: scalar specifying number of arrivals per unit time.
+    :return: n-dim numpy array with same shape as arr, whose elements are the respective probabilities.
+    """
     return np.float_power(np.broadcast_to(rate, arr.shape), arr) * np.exp(-rate) / scipy.special.factorial(arr)
 
 
-def state_arrays_to_values(states_1, states_2, values):
-    states_1_flat = states_1.flatten()
-    states_2_flat = states_2.flatten()
-    values_flat = np.asarray([values[state] for state in zip(states_1_flat, states_2_flat)])
-    return values_flat.reshape(states_1.shape)
+def state_arrays_to_values(tuples_1, tuples_2, tuple_keyed_dict):
+    """
+    Use tuples drawn from two n-dim numpy arrays as  keys for a dictionary.
+    :param tuples_1: n-dim numpy array of integers; each element is the first part of a tuple-key;
+    :param tuples_2: n-dim numpy array of integers; each element is the second part of a tuple-key;
+    :param tuple_keyed_dict: dictionary whose keys are tuple integers; should contain every key specified by tuples_[12]
+    :return: values: n-dim array with same shape as tuples_[12] containing  elements of  tuple_keyed_dict
+    """
+    states_1_flat = tuples_1.flatten()
+    states_2_flat = tuples_2.flatten()
+    values_flat = np.asarray([tuple_keyed_dict[state] for state in zip(states_1_flat, states_2_flat)])
+    return values_flat.reshape(tuples_1.shape)
 
 
-def expected_return(state, action, values):
+def cars_moved(action):
+    """
+    Compute car flows INTO each location (negative if flowing outward)
+    :param action: action string (3-string indication number and direction of car flow)
+    :return: cars_moved_1, cars_moved_2: number of cars flowing INTO each respective location
+    """
     cars_moved_1 = -int(action[0]) if action[1] == '1' and action[2] == '2' else int(action[0])
     cars_moved_2 = int(action[0]) if action[1] == '1' and action[2] == '2' else -int(action[0])
 
-    possible_rentals_1 = np.arange(min(state[0] - cars_moved_2, MAX_NUM_CARS) + 1)
-    possible_returns_1 = np.arange(MAX_NUM_CARS + 1)
+    for cm in [cars_moved_1, cars_moved_2]:
+        assert (abs(cm) <= 5), "Failure in sanity check |cars moved| <= 5: cm= {0}".format(cm)
+    assert (cars_moved_1 == - cars_moved_2), \
+        "Failure in sanity check cars_moved_1 = -cars_moved_2: {0}!=-{1}".format(cars_moved_1, cars_moved_2)
 
-    possible_rentals_2 = np.arange(min(state[1] - cars_moved_1, MAX_NUM_CARS) + 1)
+    return cars_moved_1, cars_moved_2
+
+
+def possible_rentals_and_returns(car_dynamics, state):
+    """
+    Enumerate the possible rentals and returns from the current state given the flow of cars.
+    :param car_dynamics: Tuple giving net flow of cars into locations 1 and 2
+    :param state: current number of cars at each location
+    :return: (rentals_1, rentals_2, returns_1, returns_2): 4-tuple containing all possible rentals and returns as 4-d
+    numpy arrays; each axis corresponds to varying one of rentals or returns at one location
+    """
+
+    # Possible rentals can't exceed number of cars rentable tomorrow
+    possible_rentals_1 = np.arange(state[0] + car_dynamics[0] + 1)
+    possible_rentals_2 = np.arange(state[1] + car_dynamics[1] + 1)
+    assert (np.all(possible_rentals_1 >= 0)), "Negative number of rentals at location 1: {0}".format(possible_rentals_1)
+    assert (np.all(possible_rentals_2 >= 0)), "Negative number of rentals at location 2: {0}".format(possible_rentals_2)
+
+    # Possible number of returns capped at max fleet size (2 * MAX_NUM_CARS), no strict conservation conditions here tho
+    possible_returns_1 = np.arange(MAX_NUM_CARS + 1)
     possible_returns_2 = np.arange(MAX_NUM_CARS + 1)
 
+    # Meshgrid to vectorize computation
     rentals_1, returns_1, rentals_2, returns_2 = np.meshgrid(
         possible_rentals_1, possible_returns_1,
         possible_rentals_2, possible_returns_2
     )
+    return rentals_1, rentals_2, returns_1, returns_2
 
-    prob_rentals_1 = poisson(rentals_1, RATE_RENTAL_1)
-    prob_returns_1 = poisson(returns_1, RATE_RETURN_1)
-    prob_rentals_2 = poisson(rentals_2, RATE_RENTAL_2)
-    prob_returns_2 = poisson(returns_2, RATE_RETURN_2)
 
-    next_states_rentals_returns_1 = state[0] - rentals_1 + returns_1 + cars_moved_1
-    next_states_rentals_returns_2 = state[1] - rentals_2 + returns_2 + cars_moved_2
+def next_possible_states(state, car_dynamics, rr_dynamics):
+    """
+    Given the current state and action taken, compute all the possible next states reachable. Returns a 3-tuple:
+     each element is a 4-d numpy array, where a different part of state varies along each axis; e.g. returns at location
+     1 vary along the first axis, returns at location 1 vary along the second etc. The first two tuples are the next
+     states at each location  and the third is the respective joint probability of reaching those states.
 
-    next_states_rentals_returns_1[next_states_rentals_returns_1 > MAX_NUM_CARS] = MAX_NUM_CARS
-    next_states_rentals_returns_2[next_states_rentals_returns_2 > MAX_NUM_CARS] = MAX_NUM_CARS
+    :param state: tuple specifying the current state, i.e. tuple with number of cars at locations 1 and 2
+    :param car_dynamics: 2-tuple containing net flow of cars into locations 1 and 2
+    :param rr_dynamics: 4-tuple giving rentals and returns at locations 1 and 2 (output of possible_rentals_and_returns)
+    :return: (next_states_rentals_returns_1, next_states_rentals_returns_2, probs)
+     tuple containing all future possible states at each location reachable from the present state with the given
+     action,and the joint probability of reaching those states
+    """
+    rentals_1, rentals_2, returns_1, returns_2 = rr_dynamics
+    cars_moved_1, cars_moved_2 = car_dynamics
 
-    rewards = REWARD_PER_RENTAL * (rentals_1 + rentals_2) - (2 * int(action[0]))
+    next_states_1 = state[0] - rentals_1 + returns_1 + cars_moved_1
+    next_states_2 = state[1] - rentals_2 + returns_2 + cars_moved_2
 
-    next_vals = state_arrays_to_values(next_states_rentals_returns_1, next_states_rentals_returns_2, values)
+    # clip states to MAX_NUM_CARS
+    next_states_1[next_states_1 > MAX_NUM_CARS] = MAX_NUM_CARS
+    next_states_2[next_states_2 > MAX_NUM_CARS] = MAX_NUM_CARS
+    assert(np.all(next_states_1 >= 0)), "Negative next_state_1: ".format(next_states_1.min())
+    assert(np.all(next_states_2 >= 0)), "Negative next_state_2: ".format(next_states_2.min())
 
-    val_updates = (prob_rentals_1 * prob_returns_1 * prob_rentals_2 * prob_returns_2) * \
-                  (rewards + DISCOUNT * next_vals)
+    probs_1 = poisson(rentals_1, RATE_RENTAL_1) * poisson(returns_1, RATE_RETURN_1)
+    probs_2 = poisson(rentals_2, RATE_RENTAL_2) * poisson(returns_2, RATE_RETURN_2)
 
-    out = np.sum(val_updates)
+    joint_prob = probs_1 * probs_2
+    joint_prob /= joint_prob.sum()
 
-    return out
+    return next_states_1, next_states_2, joint_prob
+
+
+def expected_return(state, action, values):
+    car_dynamics = cars_moved(action)
+
+    rr_dynamics = possible_rentals_and_returns(car_dynamics, state)
+
+    next_states_1, next_states_2, joint_prob = next_possible_states(state, car_dynamics, rr_dynamics)
+
+    rewards = REWARD_PER_RENTAL * (rr_dynamics[0] + rr_dynamics[1]) - (2 * int(action[0]))
+
+    next_vals = state_arrays_to_values(next_states_1, next_states_2, values)
+
+    val_updates = joint_prob * (rewards + DISCOUNT * next_vals)
+
+    return val_updates.sum()
 
 
 def initialize():
@@ -159,19 +224,15 @@ def plot_policy(policy):
     xx, yy = np.meshgrid(x, y)
     vals = state_arrays_to_values(xx, yy, policy)
     vals = np.reshape(
-        [int(a[0]) if a[1] == '1' else -int(a[0]) for a in vals.flatten()],
+        [-int(a[0]) if a[1] == '1' else int(a[0]) for a in vals.flatten()],
         xx.shape
     )
-    plt.imshow(vals)
+    plt.imshow(vals.T)
     plt.gca().invert_yaxis()
     plt.xlabel("Cars at Location 2")
     plt.ylabel("Cars at Location 1")
-    plt.title("Policy: Cars Moved Into Location 1")
+    plt.title("Policy: Cars Moved From Location 1 to Location 2")
     plt.colorbar()
-
-
-# if True:
-states, values, actions, policy, policies = initialize()
 
 
 def evaluate(state, values, policy):
@@ -181,7 +242,7 @@ def evaluate(state, values, policy):
     return er, np.max([0, np.abs(v_curr - er)]), state
 
 
-def improve(state, actions):
+def improve(state, actions, values):
     action_values = [expected_return(state, action, values) for action in actions[state]]
     policy_update = actions[state][np.argmax(action_values)]
 
@@ -189,6 +250,7 @@ def improve(state, actions):
 
 
 if __name__ == '__main__':
+    states, values, actions, policy, policies = initialize()
 
     policy_stable = False
     values_sets = [values]
@@ -219,7 +281,7 @@ if __name__ == '__main__':
 
         with Pool(processes=8) as p:
             policy_updates, eval_states = \
-                zip(*p.map(functools.partial(improve, actions=actions), states))
+                zip(*p.map(functools.partial(improve, actions=actions, values=values), states))
 
         policy_stable = True
         for idx, s in enumerate(states):
@@ -232,7 +294,7 @@ if __name__ == '__main__':
         # policy_stable = True
         # for state in tqdm(states, total=len(states), desc='Improving Policy'):
         #     old_action = policy[state]
-        #     action_values = [expected_return(state, action, values) for action in actions[state]]
+        #     action_values = [expected_return(state, action, tuple_keyed_dict) for action in actions[state]]
         #     policy[state] = actions[state][np.argmax(action_values)]
         #     if old_action != policy[state]:
         #         policy_stable = False
@@ -247,7 +309,7 @@ if __name__ == '__main__':
         plt.figure('policy ' + str(i))
         plot_policy(pol)
 
-        plt.figure('values ' + str(i))
+        plt.figure('tuple_keyed_dict ' + str(i))
         plot_values(values_sets[i])
     plt.show()
     #     # improvement loop
@@ -256,7 +318,7 @@ if __name__ == '__main__':
     #         pickle.dump(policies, f)
     #
     #     with open('value.pkl', 'wb') as f:
-    #         pickle.dump(values, f)
+    #         pickle.dump(tuple_keyed_dict, f)
     #
     # else:
     #     # assuming the following files are saved
