@@ -31,7 +31,7 @@ REWARD_PER_RENTAL = 10
 DISCOUNT = 0.9
 POLICY_EVAL_THRESH = 1
 
-USE_NONLINEARITIES = True # use nonlinear conditions (free move + parking cost)
+USE_NONLINEARITIES = True  # use nonlinear conditions (free move + parking cost)
 
 
 def poisson(arr, rate):
@@ -52,7 +52,7 @@ def state_arrays_to_values(tuples_1, tuples_2, tuple_keyed_dict):
     :param tuples_1: n-dim numpy array of integers; each element is the first part of a tuple-key;
     :param tuples_2: n-dim numpy array of integers; each element is the second part of a tuple-key;
     :param tuple_keyed_dict: dictionary whose keys are tuple integers; should contain every key specified by tuples_[12]
-    :return: values: n-dim array with same shape as tuples_[12] containing  elements of  tuple_keyed_dict
+    :return: vals: n-dim array with same shape as tuples_[12] containing  elements of  tuple_keyed_dict
     """
     states_1_flat = tuples_1.flatten()
     states_2_flat = tuples_2.flatten()
@@ -127,8 +127,8 @@ def next_possible_states(state, car_dynamics, rr_dynamics):
     # clip states to MAX_NUM_CARS
     next_states_1[next_states_1 > MAX_NUM_CARS] = MAX_NUM_CARS
     next_states_2[next_states_2 > MAX_NUM_CARS] = MAX_NUM_CARS
-    assert(np.all(next_states_1 >= 0)), "Negative next_state_1: ".format(next_states_1.min())
-    assert(np.all(next_states_2 >= 0)), "Negative next_state_2: ".format(next_states_2.min())
+    assert (np.all(next_states_1 >= 0)), "Negative next_state_1: ".format(next_states_1.min())
+    assert (np.all(next_states_2 >= 0)), "Negative next_state_2: ".format(next_states_2.min())
 
     probs_1 = poisson(rentals_1, RATE_RENTAL_1) * poisson(returns_1, RATE_RETURN_1)
     probs_2 = poisson(rentals_2, RATE_RENTAL_2) * poisson(returns_2, RATE_RETURN_2)
@@ -151,15 +151,14 @@ def expected_return(state, action, values):
         moving_cost = 2 * (max([int(action[0]) - 1, 0]))
         # every car stored over 10 costs $4 / night
         num_cars_excess = (
-                              np.maximum(next_states_1 - 10, np.zeros_like(next_states_1))
-            +
-                              np.maximum(next_states_2 - 10, np.zeros_like(next_states_2))
+                np.maximum(next_states_1 - 10, np.zeros_like(next_states_1))
+                +
+                np.maximum(next_states_2 - 10, np.zeros_like(next_states_2))
         )
         storage_cost = 4 * num_cars_excess
     else:
         moving_cost = 2 * int(action[0])
         storage_cost = 0
-
 
     rewards = REWARD_PER_RENTAL * (rr_dynamics[0] + rr_dynamics[1]) - moving_cost - storage_cost
 
@@ -306,8 +305,6 @@ if __name__ == '__main__':
                 policy_stable = False
                 policy[s] = policy_updates[idx]
 
-
-
         # policy_stable = True
         # for state in tqdm(states, total=len(states), desc='Improving Policy'):
         #     old_action = policy[state]
@@ -316,13 +313,12 @@ if __name__ == '__main__':
         #     if old_action != policy[state]:
         #         policy_stable = False
 
-        print('appended policy, policy_stable = ',policy_stable)
+        print('appended policy, policy_stable = ', policy_stable)
         policies.append(policy.copy())
 
     print("leaving: policy_stable = ", policy_stable)
 
     for i, pol in enumerate(policies):
-
         plt.figure('policy ' + str(i))
         plot_policy(pol)
 
@@ -331,16 +327,16 @@ if __name__ == '__main__':
     plt.show()
     #     # improvement loop
     #
-    #     with open('policies.pkl', 'wb') as f:
-    #         pickle.dump(policies, f)
+    #     with open('policy_sets.pkl', 'wb') as f:
+    #         pickle.dump(policy_sets, f)
     #
     #     with open('value.pkl', 'wb') as f:
     #         pickle.dump(tuple_keyed_dict, f)
     #
     # else:
     #     # assuming the following files are saved
-    #     with open('policies.pkl', 'rb') as f:
-    #         policies = pickle.load(f)
+    #     with open('policy_sets.pkl', 'rb') as f:
+    #         policy_sets = pickle.load(f)
     #
     #     with open('value.pkl', 'rb') as f:
     #         value = pickle.load(f)
