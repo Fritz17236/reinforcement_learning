@@ -16,14 +16,16 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.gridspec import GridSpec
 
+
 class GridWorld:
     """
     An episode instance of Gridworld
     """
-    def __init__(self, shape, goal, col_wind_speeds, king_moves=False, start=(0,0)):
-        assert(len(shape) == 2)
-        assert(len(goal) == 2)
-        assert(len(col_wind_speeds) == shape[0])
+
+    def __init__(self, shape, goal, col_wind_speeds, king_moves=False, start=(0, 0)):
+        assert (len(shape) == 2)
+        assert (len(goal) == 2)
+        assert (len(col_wind_speeds) == shape[0])
 
         self.shape = shape
         self.goal = goal
@@ -32,11 +34,10 @@ class GridWorld:
 
         self.location = start
         self.trajectory = [start]
-
-
+        self.terminal_location = False
 
     def actions(self):
-        basic = { # dict of direction : delta location
+        basic = {  # dict of direction : delta location
             'n': (0, 1),
             's': (0, -1),
             'e': (1, 0),
@@ -62,15 +63,15 @@ class GridWorld:
         :param action: Desired movement; must be one of Gridworld.actions()
         :return: reward, 0 if at reward, -1 otherwise.
         """
-        assert(action in self.actions())
+        assert (action in self.actions())
 
         next_x, next_y = self.location
         delta = self.actions()[action]
-        assert(len(delta) == 2)
+        assert (len(delta) == 2)
         next_x += delta[0]
         next_y += delta[1]
 
-        assert(len(self.location) == 2)
+        assert (len(self.location) == 2)
         next_y += self.col_wind_speeds[self.location[0]]
 
         next_x = min(next_x, self.shape[0] - 1)
@@ -81,24 +82,24 @@ class GridWorld:
         self.location = (next_x, next_y)
         self.trajectory.append(self.location)
         if self.location == self.goal:
+            self.terminal_location = True
             return 0
         else:
             return -1
 
     def visualize_trajectory(self):
         gs = GridSpec(8, 1)  # 2 rows, 3 columns
-        fig = plt.figure('traj', figsize=(6,5.5))
+        fig = plt.figure('traj', figsize=(6, 5.5))
         plt.clf()
         xs, ys = zip(*self.trajectory)
         grid = np.zeros(self.shape)
 
         for idx in range(len(xs)):
-            print(idx, xs[idx], ys[idx])
             x = xs[idx]
             y = ys[idx]
             grid[x, y] = idx + 1
 
-        ax1 = fig.add_subplot(gs[0:7,:])
+        ax1 = fig.add_subplot(gs[0:7, :])
         ax1.imshow(grid.T, cmap='Greys')
 
         ax1.set_xticks(range(0, self.shape[0]))
@@ -107,66 +108,100 @@ class GridWorld:
         ylabels = [j for j in range(1, self.shape[1] + 1)]
         # ylabels.reverse()
         ax1.set_yticklabels(ylabels)
-        plt.ylim([-1/2, self.shape[1] - 1/2])
+        plt.ylim([-1 / 2, self.shape[1] - 1 / 2])
         # ax1.invert_yaxis()
         ax1.set_aspect('auto')
 
-        ax2 = fig.add_subplot(gs[7:,:])
+        ax2 = fig.add_subplot(gs[7:, :])
 
-        table = ax2.table([self.col_wind_speeds], bbox=[0,0, 1, 1],  cellLoc='center')
+        table = ax2.table([self.col_wind_speeds], bbox=[0, 0, 1, 1], cellLoc='center')
         ax2.set_yticklabels([])
         ax2.set_xticklabels([])
         ax2.set_aspect('auto')
-        table.scale(1,8)
+        table.scale(1, 8)
         plt.subplots_adjust(None, None, None, None, None, None)
         plt.tight_layout()
 
         plt.show()
         # this.location = next_loc
 
-        # trajectory.append(next_loc))
+    def reset(self):
+        self.location = self.trajectory[0]
+        self.trajectory = [self.location]
+        self.terminal_location = False
 
-        # if next_loc = goal,
 
-            #  self.is_terminal = true
+class EpsilonSarsaLearner:
+    """
+    Epsilon-Greedy Sarsa Learner
+    """
+    def __init__(self, gridworld: GridWorld):
+        self._state_space = [(i,j) for i in range(gridworld.shape[0]) for j in range(gridworld.shape[1])]
+        self._action_space = gridworld.actions()
+        self.q = {(state, action): 0 for state in self._state_space for action in self._action_space }
+        self.episodes = []
+        self.time_steps = 0
 
-            #  return (0, )
-        # else:
-        #       return -1
-    # location
+    def loop_episode(self):
+        # initialize episode
+            # start_time_step = self.time_step
+            # reset gridworld
+            # get gridworld state
+            # choose action from state using Q (epsilon-greedy)
+        # then for each step of episode while S is not terminal
+            # take action, observe r, s'
+            # choose a' from s' using Q (epsilon-greedy)
+            # q(s,a) <-- q(s,a) + alpha * [r + gamma * q(s', a') - q(s,a)]
+            # s <-- s'
+            # a <-- a'
 
-    # trajectory
-    #
+            # self.time_steps += 1
+
+        # after reaching terminal, summarize episode statistics and plot
+        # episode = {
+        # cumulative_reward: sum(rewards)
+        # steps: self.time_step - start_timestep
+        # }
+        # self.episodes.append(episode)
+        pass
+
+    def choose_action(self, state):
+        """
+        Choose an action based off of the state-action value estimate Q, with epsilon-greedy exploration
+        :param state: tuple location in gridworld
+        :return: selected action, one of Gridworld.actions()
+        """
+        pass
+
+    def plot_completed_episodes(self):
+        """ Plot the number of episodes completed vs. the time step from learner initialization """
+        pass
 
 # agent:
 # initialize
 # update value
 # choose policy action
 
-# grid 7h x 10w
-# location of agent
-# 10w column wind speeds
-# Goal location
-# rewards: constant -1 for all actions, unless goal is reached 0
-# if moving off of grid, location unchanged, but reward is still -1
-# movement is action plus north by column wind velocity
-
 if __name__ == '__main__':
     grid_shape = (10, 7)  # 10 wide by 7 high, bottom left is (0,0), top right is (10, 7)
     end_goal = (8, 4)
     wind_speeds = [0, 0, 0, 1, 1, 1, 2, 2, 1, 0]
-    # wind_speeds = [0 for j in wind_speeds]
 
     gw = GridWorld(
         shape=grid_shape, goal=end_goal, col_wind_speeds=wind_speeds,
-        king_moves=True, start=(4,0))
-    print(gw.step('e'), gw.location)
-    print(gw.step('e'), gw.location)
-    print(gw.step('e'), gw.location)
-    print(gw.step('e'), gw.location)
-    print(gw.step('e'), gw.location)
-    gw.visualize_trajectory()
-    gw.trajectory
-    print("running")
+        king_moves=False, start=(0, 0))
+    # print(gw.step('e'), gw.location)
+    # print(gw.step('e'), gw.location)
+    # print(gw.step('e'), gw.location)
+    # print(gw.step('e'), gw.location)
+    # print(gw.step('e'), gw.location)
+    # gw.visualize_trajectory()
 
-
+    learner = EpsilonSarsaLearner(gridworld=gw)
+    print(learner.q)
+    # while not gw.terminal_location:
+    #     action = np.random.choice(list(gw.actions().keys()))
+    #     gw.step(action)
+    #
+    # gw.visualize_trajectory()
+    # print("running")
