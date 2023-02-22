@@ -15,6 +15,7 @@ a ninth action that causes no movement at all other than that caused by the wind
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.gridspec import GridSpec
+from tqdm import tqdm
 
 
 class GridWorld:
@@ -135,15 +136,38 @@ class EpsilonSarsaLearner:
     """
     Epsilon-Greedy Sarsa Learner
     """
-    def __init__(self, gridworld: GridWorld):
+    def __init__(self, gridworld: GridWorld, epsilon: float, alpha: float, gamma: float):
+        self._gw = gridworld
         self._state_space = [(i,j) for i in range(gridworld.shape[0]) for j in range(gridworld.shape[1])]
         self._action_space = gridworld.actions()
         self.q = {(state, action): 0 for state in self._state_space for action in self._action_space }
         self.episodes = []
         self.time_steps = 0
+        self.epsilon = epsilon
+        self.alpha = alpha
+        self.gamma = gamma
 
     def loop_episode(self):
         # initialize episode
+
+        start_time_step = self.time_steps
+        self._gw.reset()
+        state = self._gw.location
+        action = self.choose_action(state)
+        cum_reward = 0
+        while not self._gw.terminal_location:
+            reward = self._gw.step(action)
+            next_state = self._gw.location
+            next_action = self.choose_action(next_state)
+            self.q[state, action] = self.q[state, action] + self.alpha * (
+                reward + self.gamma * self.q[next_state, next_action] - self.q[state, action]
+            )
+            state = next_state
+            action = next_action
+            cum_reward += reward
+            self.time_steps += 1
+
+        self.episodes.append({'cumulative_reward': cum_reward, 'time_steps': self.time_steps - start_time_step})
             # start_time_step = self.time_step
             # reset gridworld
             # get gridworld state
@@ -163,7 +187,6 @@ class EpsilonSarsaLearner:
         # steps: self.time_step - start_timestep
         # }
         # self.episodes.append(episode)
-        pass
 
     def choose_action(self, state):
         """
@@ -171,11 +194,27 @@ class EpsilonSarsaLearner:
         :param state: tuple location in gridworld
         :return: selected action, one of Gridworld.actions()
         """
-        pass
+        actions = list(self._gw.actions().keys())
+        explore = np.random.choice([True, False], p=[self.epsilon, 1 - self.epsilon])
+
+        if explore:
+            return np.random.choice(actions)
+        else:
+            vals = [self.q[(state, action)] for action in actions]
+            return actions[np.argmax(vals)]
+        return 1
 
     def plot_completed_episodes(self):
         """ Plot the number of episodes completed vs. the time step from learner initialization """
-        pass
+        episode_count = range(1, len(self.episodes) + 1)
+        time_steps = [ep['time_steps'] for ep in self.episodes]
+        plt.figure('evt')
+        plt.clf()
+        plt.plot(np.cumsum(time_steps), episode_count)
+        plt.xlabel("Time Step")
+        plt.ylabel("Episode Number")
+        plt.show()
+
 
 # agent:
 # initialize
@@ -186,7 +225,9 @@ if __name__ == '__main__':
     grid_shape = (10, 7)  # 10 wide by 7 high, bottom left is (0,0), top right is (10, 7)
     end_goal = (8, 4)
     wind_speeds = [0, 0, 0, 1, 1, 1, 2, 2, 1, 0]
-
+    epsilon = .1
+    alpha = .5
+    gamma = 1
     gw = GridWorld(
         shape=grid_shape, goal=end_goal, col_wind_speeds=wind_speeds,
         king_moves=False, start=(0, 0))
@@ -197,8 +238,11 @@ if __name__ == '__main__':
     # print(gw.step('e'), gw.location)
     # gw.visualize_trajectory()
 
-    learner = EpsilonSarsaLearner(gridworld=gw)
-    print(learner.q)
+    learner = EpsilonSarsaLearner(gridworld=gw, epsilon=epsilon, alpha=alpha, gamma=1)
+    for j in tqdm(range(170)):
+        learner.loop_episode()
+    learner.plot_completed_episodes()
+
     # while not gw.terminal_location:
     #     action = np.random.choice(list(gw.actions().keys()))
     #     gw.step(action)
