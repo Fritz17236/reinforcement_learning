@@ -23,7 +23,7 @@ class GridWorld:
     An episode instance of Gridworld
     """
 
-    def __init__(self, shape, goal, col_wind_speeds, king_moves=False, start=(0, 0)):
+    def __init__(self, shape, goal, col_wind_speeds, king_moves=False, null_action=False, start=(0, 0)):
         assert (len(shape) == 2)
         assert (len(goal) == 2)
         assert (len(col_wind_speeds) == shape[0])
@@ -32,6 +32,7 @@ class GridWorld:
         self.goal = goal
         self.col_wind_speeds = col_wind_speeds
         self.king_moves = king_moves
+        self.null_action = null_action
 
         self.location = start
         self.trajectory = [start]
@@ -44,6 +45,8 @@ class GridWorld:
             'e': (1, 0),
             'w': (-1, 0)
         }
+        if self.null_action:
+            basic.update({'null': (0,0)})
         king = {
             'nw': (-1, 1),
             'ne': (1, 1),
@@ -208,13 +211,11 @@ class EpsilonSarsaLearner:
         """ Plot the number of episodes completed vs. the time step from learner initialization """
         episode_count = range(1, len(self.episodes) + 1)
         time_steps = [ep['time_steps'] for ep in self.episodes]
-        plt.figure('evt')
-        plt.clf()
+        fig = plt.figure('evt')
         plt.plot(np.cumsum(time_steps), episode_count)
         plt.xlabel("Time Step")
         plt.ylabel("Episode Number")
         plt.show()
-
 
 # agent:
 # initialize
@@ -228,21 +229,32 @@ if __name__ == '__main__':
     epsilon = .1
     alpha = .5
     gamma = 1
-    gw = GridWorld(
+    gw_simple = GridWorld(
         shape=grid_shape, goal=end_goal, col_wind_speeds=wind_speeds,
         king_moves=False, start=(0, 0))
-    # print(gw.step('e'), gw.location)
-    # print(gw.step('e'), gw.location)
-    # print(gw.step('e'), gw.location)
-    # print(gw.step('e'), gw.location)
-    # print(gw.step('e'), gw.location)
-    # gw.visualize_trajectory()
+    gw_king = GridWorld(
+        shape=grid_shape, goal=end_goal, col_wind_speeds=wind_speeds,
+        king_moves=True, start=(0, 0))
+    gw_king_stop = GridWorld(
+        shape=grid_shape, goal=end_goal, col_wind_speeds=wind_speeds,
+        king_moves=True, null_action=True, start=(0, 0))
 
-    learner = EpsilonSarsaLearner(gridworld=gw, epsilon=epsilon, alpha=alpha, gamma=1)
-    for j in tqdm(range(170)):
-        learner.loop_episode()
-    learner.plot_completed_episodes()
 
+    learner_simple = EpsilonSarsaLearner(gridworld=gw_simple, epsilon=epsilon, alpha=alpha, gamma=1)
+    learner_king = EpsilonSarsaLearner(gridworld=gw_king, epsilon=epsilon, alpha=alpha, gamma=1)
+    learner_king_stop = EpsilonSarsaLearner(gridworld=gw_king_stop, epsilon=epsilon, alpha=alpha, gamma=1)
+    for j in tqdm(range(1000)):
+        learner_simple.loop_episode()
+        learner_king.loop_episode()
+        learner_king_stop.loop_episode()
+    learner_simple.plot_completed_episodes()
+    learner_king.plot_completed_episodes()
+    learner_king_stop.plot_completed_episodes()
+    plt.gca().lines[0].set_linestyle('--')
+    plt.gca().lines[1].set_linestyle('-.')
+    plt.gca().lines[2].set_linestyle(':')
+    plt.legend(['4-Direction Agent', '8-Direction Agent (King\'s Moves)', 'Kings Moves with Null Move'])
+    plt.show()
     # while not gw.terminal_location:
     #     action = np.random.choice(list(gw.actions().keys()))
     #     gw.step(action)
